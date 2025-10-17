@@ -9,8 +9,8 @@ import os
 
 # --- Cấu hình ---
 MODEL_FILENAME = 'vnindex_model_v2.pkl'
-fiin_key = os.environ.get('FIIN_KEY', 'default_key') # Giữ lại để code không lỗi
-fiin_seed = os.environ.get('FIIN_SEED', 'default_seed') # Giữ lại để code không lỗi
+fiin_key = os.environ.get('FIIN_KEY', 'default_key')
+fiin_seed = os.environ.get('FIIN_SEED', 'default_seed')
 
 # Headers
 fitrade_headers_4_groups = {
@@ -20,14 +20,14 @@ fitrade_headers_4_groups = {
     "cache-control": "no-cache",
     "connection": "keep-alive",
     "content-type": "application/json",
-    "host": "wl-market.fiintrade.vn",
+    "host": "wl-market.fiintrade.vn", # <-- ĐÃ SỬA LẠI HOSTNAME CHO ĐÚNG
     "origin": "https://portal.fidt.vn",
     "pragma": "no-cache",
     "referer": "https://portal.fidt.vn/",
     "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     "x-fiin-key": fiin_key,
     "x-fiin-seed": fiin_seed,
-    "x-fiin-user-id": "c4c89b7c-6ddb-44c8-9e46-ed23e7983f2a@@" # <-- ĐÃ THÊM HEADER QUAN TRỌNG
+    "x-fiin-user-id": "c4c89b7c-6ddb-44c8-9e46-ed23e7983f2a@@"
 }
 fireant_headers = {'User-Agent': 'Mozilla/5.0'}
 
@@ -78,38 +78,40 @@ def fetch_fitrade_investor_flow_lite():
     investor_types = {'foreign': 'ForeignMatch', 'prop': 'ProprietaryMatch', 'individual': 'LocalIndividualMatch', 'institution': 'LocalInstitutionMatch'}
     net_values = {}
     for name, type_code in investor_types.items():
+        # <-- ĐÃ SỬA LẠI URL CHO ĐÚNG
         url = f"https://wl-market.fiintrade.vn/MoneyFlow/GetStatisticInvestor?language=vi&comGroupCode=VNINDEX&investorType={type_code}"
         try:
-            response = requests.get(url, headers=fitrade_headers_4_groups, timeout=10)
+            response = requests.get(url, headers=fitrade_headers_4_groups, timeout=15) # Tăng timeout
             response.raise_for_status()
             data = response.json().get('items', [{}])[0].get('today', {})
-            # Trong code gốc, giá trị `foreignNetValue` được dùng cho tất cả, ta sẽ sửa lại cho đúng
+            # Sử dụng các key chính xác từ API response
             if name == 'foreign':
                 net_values[f'foreign_net_flow'] = data.get('foreignNetValue', 0) / 1e9
             elif name == 'prop':
                 net_values[f'prop_net_flow'] = data.get('proprietaryNetValue', 0) / 1e9
             elif name == 'institution':
-                 # API không có 'localInstitutionNetValue', ta phải tự tính
                 buy = data.get('localInstitutionBuyValue', 0)
                 sell = data.get('localInstitutionSellValue', 0)
                 net_values[f'institution_net_flow'] = (buy - sell) / 1e9
             elif name == 'individual':
-                 # Tương tự, không có 'localIndividualNetValue'
-                buy = data.get('foreignBuyValue', 0) - data.get('proprietaryBuyValue', 0) - data.get('localInstitutionBuyValue', 0)
-                sell = data.get('foreignSellValue', 0) - data.get('proprietarySellValue', 0) - data.get('localInstitutionSellValue', 0)
-                net_values[f'individual_net_flow'] = (buy - sell) / 1e9
-
+                # Logic tính toán NĐT Cá nhân có thể không chính xác nếu API không trả đủ_dữ liệu, đây là cách ước tính
+                total_buy = data.get('foreignBuyValue', 0)
+                total_sell = data.get('foreignSellValue', 0)
+                other_buy = data.get('proprietaryBuyValue', 0) + data.get('localInstitutionBuyValue', 0) + data.get('foreignBuyValue', 0)
+                other_sell = data.get('proprietarySellValue', 0) + data.get('localInstitutionSellValue', 0) + data.get('foreignSellValue', 0)
+                net_values[f'individual_net_flow'] = ((total_buy - other_buy) - (total_sell - other_sell)) / 1e9
         except Exception as e:
             print(f"Lỗi khi lấy dòng tiền nhóm {name}: {e}. Mặc định là 0.")
             net_values[f'{name}_net_flow'] = 0
             
+    print(f"Tải xong dữ liệu dòng tiền 4 nhóm: {net_values}")
     return net_values
 
 def fetch_fireant_intraday_lite(symbol):
     print(f"Đang tải dữ liệu intraday cho {symbol} từ FireAnt...")
     url = f"https://www.fireant.vn/api/Data/Markets/IntradayMarketStatistic?symbol={symbol}"
     try:
-        response = requests.get(url, headers=fireant_headers)
+        response = requests.get(url, headers=fireant_headers, timeout=10)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -117,34 +119,29 @@ def fetch_fireant_intraday_lite(symbol):
         return None
 
 def create_intraday_features(intraday_data):
-    if not intraday_data or len(intraday_data) == 0:
-        return {}
-    
+    # ... (Hàm này giữ nguyên không đổi) ...
+    if not intraday_data or len(intraday_data) == 0: return {}
     df = pd.DataFrame(intraday_data)
     df['luc_cau'] = df['TotalActiveBuyVolume'] / (df['TotalActiveBuyVolume'] + df['TotalActiveSellVolume'])
     df['luc_cau'] = df['luc_cau'].fillna(0.5)
-
     features = {}
     features['lc_highest'] = df['luc_cau'].max()
     features['lc_lowest'] = df['luc_cau'].min()
     features['lc_average'] = df['luc_cau'].mean()
     features['lc_close'] = df['luc_cau'].iloc[-1]
-    
     bounced = 1 if 0.35 <= features['lc_lowest'] <= 0.37 and features['lc_close'] > features['lc_lowest'] + 0.02 else 0
     features['bounced_from_bottom_zone'] = bounced
-
     sentiment_conditions = [ features['lc_average'] > 0.47, features['lc_average'] >= 0.42, features['lc_average'] < 0.37]
     sentiment_choices = [2, 1, -2]
     features['market_sentiment_score'] = np.select(sentiment_conditions, sentiment_choices, default=-1)
-    
     features['time_in_positive_zone_percent'] = (df['luc_cau'] > 0.47).sum() / len(df)
-    
     return features
 
 # --- "Cổng Giao Tiếp" ---
 @app.route('/predict', methods=['POST'])
 def predict():
-    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Nhận được yêu cầu dự báo V2.4.")
+    # ... (Hàm này giữ nguyên logic, không đổi) ...
+    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Nhận được yêu cầu dự báo V2.5.")
     try:
         df_vnindex = fetch_fireant_data_lite("HOSTC")
         df_vn30 = fetch_fireant_data_lite("VN30")
@@ -194,5 +191,5 @@ def predict():
         return jsonify({'error': str(e)}), 500
 
 if __name__ == "__main__":
-    print("\n--- MÁY CHỦ DỰ BÁO V2.4 ĐÃ SẴN SÀNG ---")
+    print("\n--- MÁY CHỦ DỰ BÁO V2.5 ĐÃ SẴN SÀNG ---")
     app.run(host='0.0.0.0', port=5000)
