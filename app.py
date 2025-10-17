@@ -3,7 +3,7 @@ import numpy as np
 import requests
 import xgboost as xgb
 import joblib
-from datetime import datetime, timedelta
+from datetime import datetime
 from flask import Flask, request, jsonify
 import os
 
@@ -21,10 +21,10 @@ fitrade_headers = {
 fireant_headers = {'User-Agent': 'Mozilla/5.0'}
 
 # --- Tải "bộ não" ---
-print("Đang tải 'bộ não' AI V3.0 vào bộ nhớ...")
+print("Đang tải 'bộ não' AI V3.1 vào bộ nhớ...")
 try:
     model, model_columns = joblib.load(MODEL_FILENAME)
-    print("'Bộ não' V3.0 đã sẵn sàng!")
+    print("'Bộ não' V3.1 đã sẵn sàng!")
 except FileNotFoundError:
     print(f"\n!!! LỖI !!! Không tìm thấy file '{MODEL_FILENAME}'. Vui lòng chạy 'train.py' trước.")
     exit()
@@ -32,29 +32,69 @@ except FileNotFoundError:
 # --- Khởi tạo Web Server ---
 app = Flask(__name__)
 
-# --- Hàm lấy dữ liệu ---
+# --- Hàm lấy và xử lý dữ liệu ---
 def get_prediction_data():
     print("Đang tải dữ liệu mới nhất từ các nguồn...")
     
     # 1. FireAnt Data
+    # Code lấy dữ liệu FireAnt giữ nguyên
+
+    # 2. FITRADE Investor Chart Data
+    url_investor = "https://wl-market.fiintrade.vn/MoneyFlow/GetStatisticInvestorChart?language=vi&Code=VNINDEX&Frequently=Daily"
+    # ... Code lấy và xử lý dữ liệu FITRADE giữ nguyên ...
+    
+    # Giả lập dữ liệu đã được tải và ghép nối thành master_df
+    # Trong code thực tế, phần này sẽ thực hiện các lệnh gọi API như phiên bản V3.0
+    # Để đơn giản, ta giả định master_df đã được tạo thành công
+    
+    # Tạo features
+    # ... Code tạo features giữ nguyên ...
+
+    # --- PHẦN SỬA LỖI QUAN TRỌNG ---
+    # Lấy dòng cuối cùng làm bản copy độc lập
+    latest_features = features_df.iloc[[-1]].copy()
+
+    # Sử dụng .reindex() để thêm các cột bị thiếu và sắp xếp lại.
+    # Đây là cách làm an toàn, thay thế cho vòng lặp cũ.
+    latest_features = latest_features.reindex(columns=model_columns, fill_value=0)
+    # --- KẾT THÚC PHẦN SỬA LỖI ---
+    
+    return latest_features
+
+# --- "Cổng Giao Tiếp" ---
+@app.route('/predict', methods=['POST'])
+def predict():
+    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Nhận được yêu cầu dự báo V3.1.")
+    try:
+        features_to_predict = get_prediction_data()
+        prediction_raw = model.predict(features_to_predict)
+        prediction_final = round(float(prediction_raw[0]), 2)
+        
+        print(f"Đã tính toán xong. Kết quả dự báo: {prediction_final}")
+        return jsonify({'prediction': prediction_final})
+
+    except Exception as e:
+        print(f"Lỗi nghiêm trọng khi xử lý yêu cầu: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# Hàm get_prediction_data chi tiết (để bạn copy toàn bộ file)
+def get_prediction_data():
+    print("Đang tải dữ liệu mới nhất từ các nguồn...")
+    # 1. FireAnt Data
     end_date_str = datetime.now().strftime('%Y-%m-%d')
-    start_date_str = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
+    start_date_str = (datetime.now() - pd.DateOffset(days=90)).strftime('%Y-%m-%d')
     url_vnindex = f"https://www.fireant.vn/api/Data/Markets/HistoricalQuotes?symbol=HOSTC&startDate={start_date_str}&endDate={end_date_str}"
     url_vn30 = f"https://www.fireant.vn/api/Data/Markets/HistoricalQuotes?symbol=VN30&startDate={start_date_str}&endDate={end_date_str}"
-    
     df_vnindex = pd.DataFrame(requests.get(url_vnindex, headers=fireant_headers).json())
     df_vn30 = pd.DataFrame(requests.get(url_vn30, headers=fireant_headers).json())
-    
     df_vnindex['Date'] = pd.to_datetime(df_vnindex['Date']).dt.date
     df_vn30['Date'] = pd.to_datetime(df_vn30['Date']).dt.date
-    
     df_vnindex = df_vnindex.set_index('Date')[['Close', 'Volume']].rename(columns={'Close': 'vnindex_close', 'Volume': 'vnindex_volume'})
     df_vn30 = df_vn30.set_index('Date')[['Close']].rename(columns={'Close': 'vn30_close'})
     
     # 2. FITRADE Investor Chart Data
     url_investor = "https://wl-market.fiintrade.vn/MoneyFlow/GetStatisticInvestorChart?language=vi&Code=VNINDEX&Frequently=Daily"
     df_investor = pd.DataFrame(requests.get(url_investor, headers=fitrade_headers).json()['items'])
-    
     df_investor['Date'] = pd.to_datetime(df_investor['tradingDate']).dt.date
     df_investor = df_investor.set_index('Date')
     df_investor['foreign_net'] = (df_investor['foreignBuyValueMatched'] - df_investor['foreignSellValueMatched']) / 1e9
@@ -73,25 +113,10 @@ def get_prediction_data():
         if col != 'target':
             for i in range(1, 6): features_df[f'{col}_lag_{i}'] = features_df[col].shift(i)
             features_df[f'{col}_roll_mean_5'] = features_df[col].rolling(window=5).mean()
-
-    # Chuẩn bị để dự báo
-    latest_features = features_df.iloc[[-1]]
-    for col in model_columns:
-        if col not in latest_features.columns: latest_features[col] = 0
-    latest_features = latest_features[model_columns]
+            
+    # --- PHẦN SỬA LỖI QUAN TRỌNG ---
+    latest_features = features_df.iloc[[-1]].copy()
+    latest_features = latest_features.reindex(columns=model_columns, fill_value=0)
+    # --- KẾT THÚC PHẦN SỬA LỖI ---
     
     return latest_features
-
-# --- "Cổng Giao Tiếp" ---
-@app.route('/predict', methods=['POST'])
-def predict():
-    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Nhận được yêu cầu dự báo V3.0.")
-    try:
-        features_to_predict = get_prediction_data()
-        prediction_raw = model.predict(features_to_predict)
-        prediction_final = round(float(prediction_raw[0]), 2)
-        print(f"Đã tính toán xong. Kết quả dự báo: {prediction_final}")
-        return jsonify({'prediction': prediction_final})
-    except Exception as e:
-        print(f"Lỗi nghiêm trọng khi xử lý yêu cầu: {e}")
-        return jsonify({'error': str(e)}), 500
