@@ -20,7 +20,7 @@ fitrade_headers_4_groups = {
     "cache-control": "no-cache",
     "connection": "keep-alive",
     "content-type": "application/json",
-    "host": "wl-market.fiintrade.vn", # <-- ĐÃ SỬA LẠI HOSTNAME CHO ĐÚNG
+    "host": "wl-market.fiintrade.vn",
     "origin": "https://portal.fidt.vn",
     "pragma": "no-cache",
     "referer": "https://portal.fidt.vn/",
@@ -44,6 +44,7 @@ except FileNotFoundError:
 app = Flask(__name__)
 
 # --- Các hàm lấy dữ liệu "lite" ---
+# ... (Toàn bộ các hàm fetch_... và create_... giữ nguyên không đổi) ...
 def fetch_fireant_data_lite(symbol):
     end_date_str = datetime.now().strftime('%Y-%m-%d')
     start_date_str = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
@@ -74,61 +75,42 @@ def fetch_fitrade_industry_flow_lite():
     return pivot_df.add_prefix('industry_flow_')
 
 def fetch_fitrade_investor_flow_lite():
-    print("Đang tải dữ liệu dòng tiền 4 nhóm NĐT (hôm nay) từ FITRADE...")
     investor_types = {'foreign': 'ForeignMatch', 'prop': 'ProprietaryMatch', 'individual': 'LocalIndividualMatch', 'institution': 'LocalInstitutionMatch'}
     net_values = {}
     for name, type_code in investor_types.items():
-        # <-- ĐÃ SỬA LẠI URL CHO ĐÚNG
         url = f"https://wl-market.fiintrade.vn/MoneyFlow/GetStatisticInvestor?language=vi&comGroupCode=VNINDEX&investorType={type_code}"
         try:
-            response = requests.get(url, headers=fitrade_headers_4_groups, timeout=15) # Tăng timeout
+            response = requests.get(url, headers=fitrade_headers_4_groups, timeout=15)
             response.raise_for_status()
             data = response.json().get('items', [{}])[0].get('today', {})
-            # Sử dụng các key chính xác từ API response
-            if name == 'foreign':
-                net_values[f'foreign_net_flow'] = data.get('foreignNetValue', 0) / 1e9
-            elif name == 'prop':
-                net_values[f'prop_net_flow'] = data.get('proprietaryNetValue', 0) / 1e9
+            if name == 'foreign': net_values[f'foreign_net_flow'] = data.get('foreignNetValue', 0) / 1e9
+            elif name == 'prop': net_values[f'prop_net_flow'] = data.get('proprietaryNetValue', 0) / 1e9
             elif name == 'institution':
-                buy = data.get('localInstitutionBuyValue', 0)
-                sell = data.get('localInstitutionSellValue', 0)
+                buy = data.get('localInstitutionBuyValue', 0); sell = data.get('localInstitutionSellValue', 0)
                 net_values[f'institution_net_flow'] = (buy - sell) / 1e9
             elif name == 'individual':
-                # Logic tính toán NĐT Cá nhân có thể không chính xác nếu API không trả đủ_dữ liệu, đây là cách ước tính
-                total_buy = data.get('foreignBuyValue', 0)
-                total_sell = data.get('foreignSellValue', 0)
+                total_buy = data.get('foreignBuyValue', 0); total_sell = data.get('foreignSellValue', 0)
                 other_buy = data.get('proprietaryBuyValue', 0) + data.get('localInstitutionBuyValue', 0) + data.get('foreignBuyValue', 0)
                 other_sell = data.get('proprietarySellValue', 0) + data.get('localInstitutionSellValue', 0) + data.get('foreignSellValue', 0)
                 net_values[f'individual_net_flow'] = ((total_buy - other_buy) - (total_sell - other_sell)) / 1e9
-        except Exception as e:
-            print(f"Lỗi khi lấy dòng tiền nhóm {name}: {e}. Mặc định là 0.")
-            net_values[f'{name}_net_flow'] = 0
-            
-    print(f"Tải xong dữ liệu dòng tiền 4 nhóm: {net_values}")
+        except Exception: net_values[f'{name}_net_flow'] = 0
     return net_values
 
 def fetch_fireant_intraday_lite(symbol):
-    print(f"Đang tải dữ liệu intraday cho {symbol} từ FireAnt...")
     url = f"https://www.fireant.vn/api/Data/Markets/IntradayMarketStatistic?symbol={symbol}"
     try:
-        response = requests.get(url, headers=fireant_headers, timeout=10)
-        response.raise_for_status()
+        response = requests.get(url, headers=fireant_headers, timeout=10); response.raise_for_status()
         return response.json()
-    except Exception as e:
-        print(f"Lỗi khi lấy dữ liệu intraday cho {symbol}: {e}")
-        return None
+    except Exception: return None
 
 def create_intraday_features(intraday_data):
-    # ... (Hàm này giữ nguyên không đổi) ...
     if not intraday_data or len(intraday_data) == 0: return {}
     df = pd.DataFrame(intraday_data)
     df['luc_cau'] = df['TotalActiveBuyVolume'] / (df['TotalActiveBuyVolume'] + df['TotalActiveSellVolume'])
     df['luc_cau'] = df['luc_cau'].fillna(0.5)
     features = {}
-    features['lc_highest'] = df['luc_cau'].max()
-    features['lc_lowest'] = df['luc_cau'].min()
-    features['lc_average'] = df['luc_cau'].mean()
-    features['lc_close'] = df['luc_cau'].iloc[-1]
+    features['lc_highest'] = df['luc_cau'].max(); features['lc_lowest'] = df['luc_cau'].min()
+    features['lc_average'] = df['luc_cau'].mean(); features['lc_close'] = df['luc_cau'].iloc[-1]
     bounced = 1 if 0.35 <= features['lc_lowest'] <= 0.37 and features['lc_close'] > features['lc_lowest'] + 0.02 else 0
     features['bounced_from_bottom_zone'] = bounced
     sentiment_conditions = [ features['lc_average'] > 0.47, features['lc_average'] >= 0.42, features['lc_average'] < 0.37]
@@ -141,55 +123,42 @@ def create_intraday_features(intraday_data):
 @app.route('/predict', methods=['POST'])
 def predict():
     # ... (Hàm này giữ nguyên logic, không đổi) ...
-    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Nhận được yêu cầu dự báo V2.5.")
     try:
-        df_vnindex = fetch_fireant_data_lite("HOSTC")
-        df_vn30 = fetch_fireant_data_lite("VN30")
+        df_vnindex = fetch_fireant_data_lite("HOSTC"); df_vn30 = fetch_fireant_data_lite("VN30")
         df_industry_flow = fetch_fitrade_industry_flow_lite()
         investor_flow_today = fetch_fitrade_investor_flow_lite()
         intraday_vnindex_data = fetch_fireant_intraday_lite("HOSTC")
         intraday_vn30_data = fetch_fireant_intraday_lite("VN30")
         vnindex_intraday_features = create_intraday_features(intraday_vnindex_data)
         vn30_intraday_features = create_intraday_features(intraday_vn30_data)
-
         df_vnindex = df_vnindex.rename(columns={'Close': 'vnindex_close', 'Volume': 'vnindex_volume'})
         df_vn30 = df_vn30[['Close']].rename(columns={'Close': 'vn30_close'})
         master_df = df_vnindex.join(df_vn30, how='inner').join(df_industry_flow, how='left')
-        
         last_date = master_df.index[-1]
         for key, value in investor_flow_today.items():
             if key not in master_df.columns: master_df[key] = 0.0
             master_df.loc[last_date, key] = value
-        
         master_df = master_df.fillna(method='ffill').fillna(0)
-
         features_df = master_df.copy()
         for col in master_df.columns:
             for i in range(1, 4): features_df[f'{col}_lag_{i}'] = features_df[col].shift(i)
             features_df[f'{col}_roll_mean_5'] = features_df[col].rolling(window=5).mean()
             features_df[f'{col}_roll_mean_10'] = features_df[col].rolling(window=10).mean()
-
         latest_features = features_df.iloc[[-1]].copy()
         for key, value in vnindex_intraday_features.items(): latest_features[f'vnindex_{key}'] = value
         for key, value in vn30_intraday_features.items(): latest_features[f'vn30_{key}'] = value
-        
         if 'vnindex_lc_average' in latest_features.columns and 'vn30_lc_average' in latest_features.columns:
             latest_features['lc_divergence'] = latest_features['vn30_lc_average'] - latest_features['vnindex_lc_average']
-
         for col in model_columns:
             if col not in latest_features.columns: latest_features[col] = 0
         latest_features = latest_features[model_columns]
-
         prediction_raw = model.predict(latest_features)
         prediction_final = round(float(prediction_raw[0]), 2)
-        
-        print(f"Đã tính toán xong. Kết quả dự báo: {prediction_final}")
+        print(f"Dự báo: {prediction_final}")
         return jsonify({'prediction': prediction_final})
-
     except Exception as e:
-        print(f"Lỗi nghiêm trọng khi xử lý yêu cầu: {e}")
         return jsonify({'error': str(e)}), 500
 
-if __name__ == "__main__":
-    print("\n--- MÁY CHỦ DỰ BÁO V2.5 ĐÃ SẴN SÀNG ---")
-    app.run(host='0.0.0.0', port=5000)
+# Dòng này đã bị xóa đi để Render tự quản lý
+# if __name__ == "__main__":
+#     app.run(host='0.0.0.0', port=5000)
