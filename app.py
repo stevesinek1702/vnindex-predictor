@@ -3,7 +3,7 @@ import numpy as np
 import requests
 import xgboost as xgb
 import joblib
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 import os
 
@@ -21,76 +21,27 @@ fitrade_headers = {
 fireant_headers = {'User-Agent': 'Mozilla/5.0'}
 
 # --- Tải "bộ não" ---
-print("Đang tải 'bộ não' AI V3.1 vào bộ nhớ...")
+print("Đang tải 'bộ não' AI V3.2 vào bộ nhớ...")
 try:
     model, model_columns = joblib.load(MODEL_FILENAME)
-    print("'Bộ não' V3.1 đã sẵn sàng!")
+    print("'Bộ não' V3.2 đã sẵn sàng!")
 except FileNotFoundError:
-    print(f"\n!!! LỖI !!! Không tìm thấy file '{MODEL_FILENAME}'. Vui lòng chạy 'train.py' trước.")
+    print(f"\n!!! LỖI !!! Không tìm thấy file '{MODEL_FILENAME}'.")
     exit()
 
 # --- Khởi tạo Web Server ---
 app = Flask(__name__)
 
-# --- Hàm lấy và xử lý dữ liệu ---
-def get_prediction_data():
-    print("Đang tải dữ liệu mới nhất từ các nguồn...")
-    
-    # 1. FireAnt Data
-    # Code lấy dữ liệu FireAnt giữ nguyên
-
-    # 2. FITRADE Investor Chart Data
-    url_investor = "https://wl-market.fiintrade.vn/MoneyFlow/GetStatisticInvestorChart?language=vi&Code=VNINDEX&Frequently=Daily"
-    # ... Code lấy và xử lý dữ liệu FITRADE giữ nguyên ...
-    
-    # Giả lập dữ liệu đã được tải và ghép nối thành master_df
-    # Trong code thực tế, phần này sẽ thực hiện các lệnh gọi API như phiên bản V3.0
-    # Để đơn giản, ta giả định master_df đã được tạo thành công
-    
-    # Tạo features
-    # ... Code tạo features giữ nguyên ...
-
-    # --- PHẦN SỬA LỖI QUAN TRỌNG ---
-    # Lấy dòng cuối cùng làm bản copy độc lập
-    latest_features = features_df.iloc[[-1]].copy()
-
-    # Sử dụng .reindex() để thêm các cột bị thiếu và sắp xếp lại.
-    # Đây là cách làm an toàn, thay thế cho vòng lặp cũ.
-    latest_features = latest_features.reindex(columns=model_columns, fill_value=0)
-    # --- KẾT THÚC PHẦN SỬA LỖI ---
-    
-    return latest_features
-
-# --- "Cổng Giao Tiếp" ---
-@app.route('/predict', methods=['POST'])
-def predict():
-    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Nhận được yêu cầu dự báo V3.1.")
-    try:
-        features_to_predict = get_prediction_data()
-        prediction_raw = model.predict(features_to_predict)
-        prediction_final = round(float(prediction_raw[0]), 2)
-        
-        print(f"Đã tính toán xong. Kết quả dự báo: {prediction_final}")
-        return jsonify({'prediction': prediction_final})
-
-    except Exception as e:
-        print(f"Lỗi nghiêm trọng khi xử lý yêu cầu: {e}")
-        return jsonify({'error': str(e)}), 500
-
-# Hàm get_prediction_data chi tiết (để bạn copy toàn bộ file)
-def get_prediction_data():
-    print("Đang tải dữ liệu mới nhất từ các nguồn...")
+# --- Các hàm xử lý dữ liệu ---
+def get_daily_data(days_to_fetch=120): # Lấy nhiều dữ liệu hơn cho backtest
+    # ... (Hàm này giữ nguyên không đổi) ...
     # 1. FireAnt Data
     end_date_str = datetime.now().strftime('%Y-%m-%d')
-    start_date_str = (datetime.now() - pd.DateOffset(days=90)).strftime('%Y-%m-%d')
+    start_date_str = (datetime.now() - timedelta(days=days_to_fetch)).strftime('%Y-%m-%d')
     url_vnindex = f"https://www.fireant.vn/api/Data/Markets/HistoricalQuotes?symbol=HOSTC&startDate={start_date_str}&endDate={end_date_str}"
-    url_vn30 = f"https://www.fireant.vn/api/Data/Markets/HistoricalQuotes?symbol=VN30&startDate={start_date_str}&endDate={end_date_str}"
     df_vnindex = pd.DataFrame(requests.get(url_vnindex, headers=fireant_headers).json())
-    df_vn30 = pd.DataFrame(requests.get(url_vn30, headers=fireant_headers).json())
     df_vnindex['Date'] = pd.to_datetime(df_vnindex['Date']).dt.date
-    df_vn30['Date'] = pd.to_datetime(df_vn30['Date']).dt.date
     df_vnindex = df_vnindex.set_index('Date')[['Close', 'Volume']].rename(columns={'Close': 'vnindex_close', 'Volume': 'vnindex_volume'})
-    df_vn30 = df_vn30.set_index('Date')[['Close']].rename(columns={'Close': 'vn30_close'})
     
     # 2. FITRADE Investor Chart Data
     url_investor = "https://wl-market.fiintrade.vn/MoneyFlow/GetStatisticInvestorChart?language=vi&Code=VNINDEX&Frequently=Daily"
@@ -102,21 +53,94 @@ def get_prediction_data():
     df_investor['individual_net'] = (df_investor['localIndividualBuyMatchValue'] - df_investor['localIndividualSellMatchValue']) / 1e9
     df_investor['institution_net'] = -(df_investor['foreign_net'] + df_investor['prop_net'] + df_investor['individual_net'])
     df_investor = df_investor[['foreign_net', 'prop_net', 'individual_net', 'institution_net']]
+    
+    master_df = df_vnindex.join(df_investor, how='left').fillna(method='ffill').fillna(0)
+    return master_df
 
-    # Ghép tất cả lại
-    master_df = df_vnindex.join(df_vn30, how='inner').join(df_investor, how='left')
-    master_df = master_df.fillna(method='ffill').fillna(0)
-
-    # Tạo features
-    features_df = master_df.copy()
-    for col in master_df.columns:
+def create_features_from_df(df):
+    features_df = df.copy()
+    for col in df.columns:
         if col != 'target':
             for i in range(1, 6): features_df[f'{col}_lag_{i}'] = features_df[col].shift(i)
             features_df[f'{col}_roll_mean_5'] = features_df[col].rolling(window=5).mean()
+    return features_df
+
+# --- Cổng Giao Tiếp 1: Dự báo T+1 ---
+@app.route('/predict', methods=['POST'])
+def predict():
+    # ... (Hàm này giữ nguyên không đổi) ...
+    try:
+        master_df = get_daily_data(days_to_fetch=90)
+        features_df = create_features_from_df(master_df)
+        latest_features = features_df.iloc[[-1]].copy()
+        latest_features = latest_features.reindex(columns=model_columns, fill_value=0)
+        prediction_raw = model.predict(latest_features)
+        prediction_final = round(float(prediction_raw[0]), 2)
+        return jsonify({'prediction': prediction_final})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# --- Cổng Giao Tiếp 2: Backtest & Forecast (Đã nâng cấp) ---
+@app.route('/backtest_forecast', methods=['POST'])
+def backtest_forecast():
+    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Nhận được yêu cầu Backtest & Forecast V3.2.")
+    try:
+        master_df = get_daily_data(days_to_fetch=120)
+        
+        # 1. Backtest
+        backtest_results = []
+        backtest_range = 20
+        all_errors = []
+        for i in range(backtest_range, 0, -1):
+            snapshot_df = master_df.iloc[:-i]
+            features_df = create_features_from_df(snapshot_df)
+            features_to_predict = features_df.iloc[[-1]].copy().reindex(columns=model_columns, fill_value=0)
+            prediction = model.predict(features_to_predict)[0]
+            actual_date = master_df.index[-i]
+            actual_price = master_df.iloc[-i]['vnindex_close']
+            error_pct = (prediction - actual_price) / actual_price if actual_price != 0 else 0
+            all_errors.append(abs(error_pct))
+            backtest_results.append({
+                'date': actual_date.strftime('%Y-%m-%d'),
+                'actual': actual_price,
+                'predicted': round(float(prediction), 2)
+            })
             
-    # --- PHẦN SỬA LỖI QUAN TRỌNG ---
-    latest_features = features_df.iloc[[-1]].copy()
-    latest_features = latest_features.reindex(columns=model_columns, fill_value=0)
-    # --- KẾT THÚC PHẦN SỬA LỖI ---
-    
-    return latest_features
+        # Tính toán thống kê độ chính xác
+        mape = np.mean(all_errors) * 100 if all_errors else 0
+        accuracy = 100 - mape
+        
+        # 2. Forecast
+        forecast_results = []
+        future_df = master_df.copy()
+        for i in range(10): # Dự báo 10 ngày
+            features_df = create_features_from_df(future_df)
+            features_to_predict = features_df.iloc[[-1]].copy().reindex(columns=model_columns, fill_value=0)
+            prediction = model.predict(features_to_predict)[0]
+            
+            next_date = future_df.index[-1] + timedelta(days=1)
+            forecast_results.append({
+                'date': next_date.strftime('%Y-%m-%d'),
+                'actual': None,
+                'predicted': round(float(prediction), 2)
+            })
+            
+            new_row_data = {col: 0 for col in future_df.columns}
+            new_row_data['vnindex_close'] = prediction
+            new_row = pd.DataFrame(new_row_data, index=[next_date])
+            future_df = pd.concat([future_df, new_row])
+            future_df = future_df.fillna(method='ffill')
+
+        print("Hoàn tất Backtest & Forecast.")
+        return jsonify({
+            'backtest': backtest_results,
+            'forecast': forecast_results,
+            'stats': {
+                'mape': round(mape, 2),
+                'accuracy': round(accuracy, 2)
+            }
+        })
+
+    except Exception as e:
+        print(f"Lỗi nghiêm trọng khi thực hiện Backtest/Forecast: {e}")
+        return jsonify({'error': str(e)}), 500
